@@ -12,9 +12,11 @@ jobs:
 
       steps:
       - uses: actions/checkout@v2
-      - name: Set up Rust
-        uses: actions/setup-rust@v1
+      - name: Install latest nightly Rust
+        uses: actions-rs/toolchain@v1
         with:
-            rust-version: stable
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
       - name: test
         run: make rust-test

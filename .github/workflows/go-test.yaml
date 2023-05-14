@@ -16,10 +16,12 @@ jobs:
         uses: actions/setup-go@v2
         with:
             go-version: 1.20
-      - name: Set up Rust
-        uses: actions/setup-rust@v1
+      - name: Install latest nightly Rust
+        uses: actions-rs/toolchain@v1
         with:
-            rust-version: stable
+          toolchain: nightly
+          override: true
+          components: rustfmt, clippy
       - name: Set up WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: test
