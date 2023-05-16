@@ -6,6 +6,7 @@ use std::mem::MaybeUninit;
 use cedar_policy::{PolicySet, Entities, Authorizer, EntityUid, Context, Request, Decision};
 
 use std::{slice};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use once_cell::sync::Lazy;
@@ -16,6 +17,10 @@ static mut ENGINE: Lazy<CedarEngine>= Lazy::new(|| {
         policy_set: PolicySet::new(),
         authorizer: Authorizer::new(),
     }
+});
+
+static mut HEAP: Lazy<HashMap<u8, Box<[MaybeUninit<u8>]>>> = Lazy::new(|| {
+    HashMap::new()
 });
 
 struct CedarEngine {
@@ -125,17 +130,25 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 /// [`deallocate`] when finished.
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "allocate")]
 #[no_mangle]
-pub extern "C" fn _allocate(size: u32) -> *mut u8 {
+pub unsafe extern "C" fn _allocate(size: u32) -> *mut u8 {
     allocate(size as usize)
 }
 
 /// Allocates size bytes and leaks the pointer where they start.
-fn allocate(size: usize) -> *mut u8 {
+unsafe fn allocate(size: usize) -> *mut u8 {
     // Allocate the amount of bytes needed.
     let vec: Vec<MaybeUninit<u8>> = Vec::with_capacity(size);
 
+    let boxed_vec = vec.into_boxed_slice();
+
     // into_raw leaks the memory to the caller.
-    Box::into_raw(vec.into_boxed_slice()) as *mut u8
+    let  ptr = Box::into_raw(Box::from(&boxed_vec)) as *mut u8;
+
+    // Store the boxed_vec to prevent it from being deallocated.
+    HEAP.insert(boxed_vec.as_ptr() as u8, boxed_vec);
+    // Return the pointer to the caller.
+    ptr
+
 }
 
 
@@ -150,6 +163,8 @@ pub unsafe extern "C" fn _deallocate(ptr: u32, size: u32) {
 /// Retakes the pointer which allows its memory to be freed.
 unsafe fn deallocate(ptr: *mut u8, size: usize) {
     let _ = Vec::from_raw_parts(ptr, 0, size);
+    // Remove the boxed_vec from the map so it can be deallocated.
+    HEAP.remove(&(ptr as u8));
 }
 
 #[cfg(test)]
