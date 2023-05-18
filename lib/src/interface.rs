@@ -19,7 +19,7 @@ static mut ENGINE: Lazy<CedarEngine>= Lazy::new(|| {
     }
 });
 
-static mut HEAP: Lazy<HashMap<u8, Box<[MaybeUninit<u8>]>>> = Lazy::new(|| {
+static mut HEAP: Lazy<HashMap<* mut u8, Box<[MaybeUninit<u8>]>>> = Lazy::new(|| {
     HashMap::new()
 });
 
@@ -130,8 +130,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 /// [`deallocate`] when finished.
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "allocate")]
 #[no_mangle]
-pub unsafe extern "C" fn _allocate(size: u32) -> *mut u8 {
-    allocate(size as usize)
+pub unsafe extern "C" fn _allocate(size: u32) -> * mut u8 {
+   allocate(size as usize)
 }
 
 /// Allocates size bytes and leaks the pointer where they start.
@@ -145,7 +145,7 @@ unsafe fn allocate(size: usize) -> *mut u8 {
     let  ptr = Box::into_raw(Box::from(&boxed_vec)) as *mut u8;
 
     // Store the boxed_vec to prevent it from being deallocated.
-    HEAP.insert(boxed_vec.as_ptr() as u8, boxed_vec);
+    HEAP.insert(ptr, boxed_vec);
     // Return the pointer to the caller.
     ptr
 
@@ -162,9 +162,10 @@ pub unsafe extern "C" fn _deallocate(ptr: u32, size: u32) {
 
 /// Retakes the pointer which allows its memory to be freed.
 unsafe fn deallocate(ptr: *mut u8, size: usize) {
-    let _ = Vec::from_raw_parts(ptr, 0, size);
     // Remove the boxed_vec from the map so it can be deallocated.
-    HEAP.remove(&(ptr as u8));
+    HEAP.remove(&ptr).expect("Pointer not found in heap map");
+    let _ = Vec::from_raw_parts(ptr, size, size);
+    let _ = *ptr; // explicitly drop the pointer
 }
 
 #[cfg(test)]
@@ -249,5 +250,30 @@ mod test {
         engine.set_entities(entities);
         let result = engine.is_authorized("User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"", "{}");
         assert_eq!(result, "Allow");
+    }
+
+    #[test]
+     fn allocate_deallocate() {
+        unsafe {
+            let zero:u8 = 0;
+            HEAP.insert(zero as *mut u8, Box::new([MaybeUninit::new(0); 10])); // Insert a dummy value to make sure the map is initialized.
+            HEAP.remove(&(zero as *mut u8)).unwrap(); // Remove the dummy value.
+            let ptr = allocate(10);
+            assert_eq!(HEAP.contains_key(&ptr), true);
+            deallocate(ptr, 10);
+            assert_eq!(HEAP.contains_key(&ptr), false);
+            let ptr = allocate(10);
+            assert_eq!(HEAP.contains_key(&ptr), true);
+            let ptr2 = allocate(10);
+            assert_eq!(HEAP.contains_key(&ptr), true);
+            assert_ne!(ptr as u8, ptr2 as u8);
+            assert_eq!(HEAP.len(), 2);
+            deallocate(ptr, 10);
+            assert_eq!(HEAP.contains_key(&ptr), false);
+            assert_eq!(HEAP.len(), 1);
+            deallocate(ptr2, 10);
+            assert_eq!(HEAP.contains_key(&ptr2), false);
+            assert_eq!(HEAP.len(), 0);
+        }
     }
 }
