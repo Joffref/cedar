@@ -2,7 +2,6 @@ extern crate alloc;
 extern crate core;
 extern crate wee_alloc;
 
-use std::mem::MaybeUninit;
 use cedar_policy::{PolicySet, Entities, Authorizer, EntityUid, Context, Request, Decision};
 
 use std::{slice};
@@ -19,7 +18,7 @@ static mut ENGINE: Lazy<CedarEngine>= Lazy::new(|| {
     }
 });
 
-static mut HEAP: Lazy<HashMap<* mut u8, Box<[MaybeUninit<u8>]>>> = Lazy::new(|| {
+static mut HEAP: Lazy<HashMap<* mut u8, &mut [u8]>> = Lazy::new(|| {
     HashMap::new()
 });
 
@@ -137,18 +136,15 @@ pub unsafe extern "C" fn _allocate(size: u32) -> * mut u8 {
 /// Allocates size bytes and leaks the pointer where they start.
 unsafe fn allocate(size: usize) -> *mut u8 {
     // Allocate the amount of bytes needed.
-    let vec: Vec<MaybeUninit<u8>> = Vec::with_capacity(size);
-
-    let boxed_vec = vec.into_boxed_slice();
+    let vec: Vec<u8> = Vec::with_capacity(size);
 
     // into_raw leaks the memory to the caller.
-    let  ptr = Box::into_raw(Box::from(&boxed_vec)) as *mut u8;
+    let  ptr = vec.as_ptr() as *mut u8;
 
     // Store the boxed_vec to prevent it from being deallocated.
-    HEAP.insert(ptr, boxed_vec);
+    HEAP.insert(ptr, vec.leak());
     // Return the pointer to the caller.
     ptr
-
 }
 
 
@@ -255,9 +251,6 @@ mod test {
     #[test]
      fn allocate_deallocate() {
         unsafe {
-            let zero:u8 = 0;
-            HEAP.insert(zero as *mut u8, Box::new([MaybeUninit::new(0); 10])); // Insert a dummy value to make sure the map is initialized.
-            HEAP.remove(&(zero as *mut u8)).unwrap(); // Remove the dummy value.
             let ptr = allocate(10);
             assert_eq!(HEAP.contains_key(&ptr), true);
             deallocate(ptr, 10);
