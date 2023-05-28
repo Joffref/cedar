@@ -18,7 +18,7 @@ rust-test: rust-dependencies
 
 wasm:
 	cd $(PROJECT_DIR)/lib && cargo build --target wasm32-unknown-unknown --release
-	mkdir -p $(PROJECT_DIR)/pkg/cedar/static
+	mkdir -p $(PROJECT_DIR)/static
 	cp $(PROJECT_DIR)/lib/target/wasm32-unknown-unknown/release/cedarwasm.wasm $(PROJECT_DIR)/static/cedar.wasm
 
 build: dependencies wasm

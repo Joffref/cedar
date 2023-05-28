@@ -6,7 +6,7 @@ edition = "2021"
 version = "1.0.0"
 
 [dependencies]
-cedar-policy = { version = "2.0" }
+cedar-policy = { version = "2.0.0" }
 wee_alloc = "0.4.5"
 once_cell = "1.17.1"
 

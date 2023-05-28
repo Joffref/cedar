@@ -39,7 +39,7 @@ func aHugeAllocationMustReturnAPtr(t *testing.T, module api.Module) {
 
 func twoConcurrentAllocationMustReturnDifferentPtr(t *testing.T, module api.Module) {
 	exportedFuncs := exportFuncs(module)
-	entitiesSize := uint64(100)
+	entitiesSize := uint64(10)
 	entitiesPtr1, err := exportedFuncs[string(allocate)].Call(context.Background(), entitiesSize)
 	if err != nil {
 		t.Fatal(err)
