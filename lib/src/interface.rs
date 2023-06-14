@@ -2,32 +2,43 @@ extern crate alloc;
 extern crate core;
 extern crate wee_alloc;
 
-use cedar_policy::{PolicySet, Entities, Authorizer, EntityUid, Context, Request, Decision};
+use cedar_policy::{
+    Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode,
+    Validator,
+};
 
-use std::{slice};
 use std::collections::HashMap;
+use std::slice;
 use std::str::FromStr;
 
 use once_cell::sync::Lazy;
 
-static mut ENGINE: Lazy<CedarEngine>= Lazy::new(|| {
-    CedarEngine {
-        entity_store: Entities::empty(),
-        policy_set: PolicySet::new(),
-        authorizer: Authorizer::new(),
-    }
+static mut ENGINE: Lazy<CedarEngine> = Lazy::new(|| CedarEngine {
+    entity_store: Entities::empty(),
+    policy_set: PolicySet::new(),
+    authorizer: Authorizer::new(),
 });
 
-static mut HEAP: Lazy<HashMap<* mut u8, &mut [u8]>> = Lazy::new(|| {
-    HashMap::new()
-});
+static mut HEAP: Lazy<HashMap<*mut u8, &mut [u8]>> = Lazy::new(|| HashMap::new());
 
 struct CedarEngine {
     entity_store: Entities,
     policy_set: PolicySet,
-    authorizer: Authorizer
+    authorizer: Authorizer,
 }
-
+pub enum CedarExitCode {
+    // The command completed successfully with a result other than a
+    // authorization deny or validation failure.
+    Success,
+    // The command failed to complete successfully.
+    Failure,
+    // The command completed successfully, but the result of the authorization
+    // request was DENY.
+    AuthorizeDeny,
+    // The command completed successfully, but it detected a validation failure
+    // in the given schema and policies.
+    ValidationFailure,
+}
 impl CedarEngine {
     fn set_entities(&mut self, entities_json: &str) {
         match Entities::from_json_str(entities_json, None) {
@@ -49,17 +60,49 @@ impl CedarEngine {
             }
         }
     }
-    fn is_authorized(&self, entity: &str, action: &str, resource: &str, context: &str) -> String  {
+    fn is_authorized(&self, entity: &str, action: &str, resource: &str, context: &str) -> String {
         let principal = EntityUid::from_str(entity).expect("entity parse error");
         let action = EntityUid::from_str(action).expect("entity parse error");
         let resource = EntityUid::from_str(resource).expect("entity parse error");
         let context = Context::from_json_str(context, None).unwrap();
         let query = Request::new(Some(principal), Some(action), Some(resource), context);
-        let response = self.authorizer.is_authorized(&query, &self.policy_set, &self.entity_store);
+        let response = self
+            .authorizer
+            .is_authorized(&query, &self.policy_set, &self.entity_store);
         return if response.decision() == Decision::Allow {
             String::from("Allow")
         } else {
             String::from("Deny")
+        };
+    }
+    fn validate(&mut self, policies_str: &str, schema_str: &str) -> CedarExitCode {
+        let pset = match PolicySet::from_str(policies_str) {
+            Ok(pset) => pset,
+            Err(e) => {
+                println!("{:#}", e);
+                return CedarExitCode::Failure;
+            }
+        };
+
+        let schema = match Schema::from_str(schema_str) {
+            Ok(schema) => schema,
+            Err(e) => {
+                println!("{:#}", e);
+                return CedarExitCode::Failure;
+            }
+        };
+
+        let validator = Validator::new(schema);
+        let result = validator.validate(&pset, ValidationMode::default());
+        if result.validation_passed() {
+            println!("Validation Passed");
+            return CedarExitCode::Success;
+        } else {
+            println!("Validation Results:");
+            for note in result.validation_errors() {
+                println!("{}", note);
+            }
+            return CedarExitCode::ValidationFailure;
         }
     }
 }
@@ -73,11 +116,23 @@ pub unsafe extern "C" fn _set_entities(entities_ptr: u32, entities_len: u32) {
 
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "set_policies")]
 #[no_mangle]
+pub unsafe extern "C" fn _validate(
+    policies_ptr: u32,
+    policies_len: u32,
+    schema_ptr: u32,
+    schema_len: u32,
+) {
+    let policies = ptr_to_string(policies_ptr, policies_len);
+    let schema = ptr_to_string(schema_ptr, schema_len);
+    ENGINE.validate(&policies, &schema);
+}
+
+#[cfg_attr(all(target_arch = "wasm32"), export_name = "validate")]
+#[no_mangle]
 pub unsafe extern "C" fn _set_policies(policies_ptr: u32, policies_len: u32) {
     let policies = ptr_to_string(policies_ptr, policies_len);
     ENGINE.set_policies(&policies);
 }
-
 
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "is_authorized")]
 #[no_mangle]
@@ -95,7 +150,12 @@ pub unsafe extern "C" fn _is_authorized(
     let action = ptr_to_string(action_ptr, action_len);
     let resource = ptr_to_string(resource_ptr, resource_len);
     let context = ptr_to_string(context_ptr, context_len);
-    let result = ENGINE.is_authorized(entity.as_str(), action.as_str(), resource.as_str(), context.as_str());
+    let result = ENGINE.is_authorized(
+        entity.as_str(),
+        action.as_str(),
+        resource.as_str(),
+        context.as_str(),
+    );
     let (ptr, len) = string_to_ptr(&result);
     std::mem::forget(result);
     return ((ptr as u64) << 32) | len as u64;
@@ -129,8 +189,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 /// [`deallocate`] when finished.
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "allocate")]
 #[no_mangle]
-pub unsafe extern "C" fn _allocate(size: u32) -> * mut u8 {
-   allocate(size as usize)
+pub unsafe extern "C" fn _allocate(size: u32) -> *mut u8 {
+    allocate(size as usize)
 }
 
 /// Allocates size bytes and leaks the pointer where they start.
@@ -139,14 +199,13 @@ unsafe fn allocate(size: usize) -> *mut u8 {
     let vec: Vec<u8> = Vec::with_capacity(size);
 
     // into_raw leaks the memory to the caller.
-    let  ptr = vec.as_ptr() as *mut u8;
+    let ptr = vec.as_ptr() as *mut u8;
 
     // Store the boxed_vec to prevent it from being deallocated.
     HEAP.insert(ptr, vec.leak());
     // Return the pointer to the caller.
     ptr
 }
-
 
 /// WebAssembly export that deallocates a pointer of the given size (linear
 /// memory offset, byteCount) allocated by [`allocate`].
@@ -170,7 +229,7 @@ mod test {
 
     #[test]
     fn set_policies() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -185,7 +244,7 @@ mod test {
     }
     #[test]
     fn set_entities() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -232,10 +291,20 @@ mod test {
         }
         assert_eq!(counter, 3);
     }
-
+    #[test]
+    fn validate() {
+        let mut engine = CedarEngine {
+            authorizer: Authorizer::new(),
+            entity_store: Entities::empty(),
+            policy_set: PolicySet::new(),
+        };
+        let bad_policy = r#"[
+        ]"#;
+        engine.validate(bad_policy, bad_policy);
+    }
     #[test]
     fn evaluate() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -244,12 +313,17 @@ mod test {
         engine.set_policies(policies);
         let entities = "[]";
         engine.set_entities(entities);
-        let result = engine.is_authorized("User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"", "{}");
+        let result = engine.is_authorized(
+            "User::\"alice\"",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        );
         assert_eq!(result, "Allow");
     }
 
     #[test]
-     fn allocate_deallocate() {
+    fn allocate_deallocate() {
         unsafe {
             let ptr = allocate(10);
             assert_eq!(HEAP.contains_key(&ptr), true);
