@@ -3,7 +3,9 @@ package cedar
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 )
@@ -65,6 +67,81 @@ func (c *CedarEngine) SetPolicies(ctx context.Context, policies string) error {
 	}
 	_, err = c.exportedFuncs[string(setPolicies)].Call(ctx, policiesPtr[0], policiesSize)
 	return err
+}
+
+type ValidationResult struct {
+	PolicyError      *string           `json:"policy_error"`
+	SchemaError      *string           `json:"schema_error"`
+	ValidationErrors []ValidationError `json:"validation_errors"`
+}
+
+type SourceLocation struct {
+	PolicyID   string `json:"policy_id"`
+	RangeStart int    `json:"range_start"`
+	RangeEnd   int    `json:"range_end"`
+}
+type ValidationError struct {
+	ErrorKind string         `json:"error_kind"`
+	Location  SourceLocation `json:"source_location"`
+}
+
+func (v ValidationResult) HasPolicyParsingErrors() bool {
+	return v.PolicyError != nil
+}
+func (v ValidationResult) HasSchemaParsingErrors() bool {
+	return v.SchemaError != nil
+}
+func (v ValidationResult) HasValidationErrors() bool {
+	return len(v.ValidationErrors) != 0
+}
+
+// ValidatePolices validates the policies against the schema.
+// See https://docs.cedarpolicy.com/syntax-policy.htmle for more information.
+func (c *CedarEngine) ValidatePolices(ctx context.Context, policies string, schema string) (*ValidationResult, error) {
+	policiesSize := uint64(len(policies))
+	policiesPtr, err := c.exportedFuncs[string(allocate)].Call(ctx, policiesSize)
+	if err != nil {
+		return nil, err
+	}
+	ok := c.module.Memory().WriteString(uint32(policiesPtr[0]), policies)
+	if !ok {
+		return nil, fmt.Errorf("failed to write policies to memory")
+	}
+	defer c.exportedFuncs[string(deallocate)].Call(ctx, policiesPtr[0], policiesSize)
+
+	schemaSize := uint64(len(schema))
+	schemaPtr, err := c.exportedFuncs[string(allocate)].Call(ctx, schemaSize)
+	if err != nil {
+		return nil, err
+	}
+	ok = c.module.Memory().WriteString(uint32(schemaPtr[0]), schema)
+	if !ok {
+		return nil, fmt.Errorf("failed to write schema to memory")
+	}
+	defer c.exportedFuncs[string(deallocate)].Call(ctx, schemaPtr[0], schemaSize)
+
+	resPtr, err := c.exportedFuncs[string(validate)].Call(ctx, policiesPtr[0], policiesSize, schemaPtr[0], schemaSize)
+	if err != nil {
+		return nil, err
+	}
+
+	validationPtr := uint32(resPtr[0] >> 32)
+	validationSize := uint32(resPtr[0])
+	defer c.exportedFuncs[string(deallocate)].Call(ctx, uint64(validationPtr), uint64(validationSize))
+	validation, ok := c.module.Memory().Read(validationPtr, validationSize)
+	if !ok {
+		return nil, fmt.Errorf("failed to read validation from memory")
+	}
+	val := string(validation)
+	var v map[string]interface{}
+	json.Unmarshal([]byte(val), &v)
+	_ = v
+	var validationResult ValidationResult
+	err = json.Unmarshal([]byte(val), &validationResult)
+	if err != nil {
+		return nil, err
+	}
+	return &validationResult, nil
 }
 
 // Eval evaluates the request against the policies and entities in the engine.

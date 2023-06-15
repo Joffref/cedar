@@ -1,10 +1,10 @@
 extern crate alloc;
 extern crate core;
+extern crate serde_json;
 extern crate wee_alloc;
-
 use cedar_policy::{
-    Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema, ValidationMode,
-    Validator,
+    Authorizer, Context, Decision, Entities, EntityUid, PolicyId, PolicySet, Request, Schema,
+    ValidationMode, Validator,
 };
 
 use std::collections::HashMap;
@@ -12,6 +12,7 @@ use std::slice;
 use std::str::FromStr;
 
 use once_cell::sync::Lazy;
+use serde::Serialize;
 
 static mut ENGINE: Lazy<CedarEngine> = Lazy::new(|| CedarEngine {
     entity_store: Entities::empty(),
@@ -26,19 +27,32 @@ struct CedarEngine {
     policy_set: PolicySet,
     authorizer: Authorizer,
 }
-pub enum CedarExitCode {
-    // The command completed successfully with a result other than a
-    // authorization deny or validation failure.
-    Success,
-    // The command failed to complete successfully.
-    Failure,
-    // The command completed successfully, but the result of the authorization
-    // request was DENY.
-    AuthorizeDeny,
-    // The command completed successfully, but it detected a validation failure
-    // in the given schema and policies.
-    ValidationFailure,
+#[derive(Debug, Serialize)]
+struct ValidationResult {
+    schema_error: Option<String>,
+    policy_error: Option<String>,
+    validation_errors: Vec<ValidationError>,
 }
+impl ValidationResult {
+    pub fn to_single_line_json(&self) -> String {
+        let json_bytes = serde_json::to_vec(self).unwrap();
+        let json_string = String::from_utf8_lossy(&json_bytes).to_string();
+        json_string
+    }
+}
+#[derive(Debug, Serialize)]
+struct ValidationError {
+    error_kind: String,
+    location: SourceLocation,
+}
+
+#[derive(Debug, Serialize)]
+struct SourceLocation {
+    policy_id: PolicyId,
+    range_start: Option<usize>,
+    range_end: Option<usize>,
+}
+
 impl CedarEngine {
     fn set_entities(&mut self, entities_json: &str) {
         match Entities::from_json_str(entities_json, None) {
@@ -75,12 +89,17 @@ impl CedarEngine {
             String::from("Deny")
         };
     }
-    fn validate(&mut self, policies_str: &str, schema_str: &str) -> CedarExitCode {
+    fn validate(&mut self, policies_str: &str, schema_str: &str) -> ValidationResult {
         let pset = match PolicySet::from_str(policies_str) {
             Ok(pset) => pset,
             Err(e) => {
                 println!("{:#}", e);
-                return CedarExitCode::Failure;
+
+                return ValidationResult {
+                    policy_error: Some(e.to_string()),
+                    schema_error: None,
+                    validation_errors: Vec::new(),
+                };
             }
         };
 
@@ -88,22 +107,38 @@ impl CedarEngine {
             Ok(schema) => schema,
             Err(e) => {
                 println!("{:#}", e);
-                return CedarExitCode::Failure;
+                return ValidationResult {
+                    schema_error: Some(e.to_string()),
+                    policy_error: None,
+                    validation_errors: Vec::new(),
+                };
             }
         };
 
         let validator = Validator::new(schema);
-        let result = validator.validate(&pset, ValidationMode::default());
-        if result.validation_passed() {
-            println!("Validation Passed");
-            return CedarExitCode::Success;
-        } else {
-            println!("Validation Results:");
-            for note in result.validation_errors() {
-                println!("{}", note);
-            }
-            return CedarExitCode::ValidationFailure;
+        let results = validator.validate(&pset, ValidationMode::default());
+        let mut json_validation_errors = Vec::new();
+
+        for validation_error in results.validation_errors() {
+            let source_location = validation_error.location();
+            println!("{:?}", source_location.range_start());
+            let pid = source_location.policy_id().clone();
+            let json_validation_error = ValidationError {
+                error_kind: validation_error.error_kind().to_string(),
+                location: SourceLocation {
+                    policy_id: pid,
+                    range_end: source_location.range_end(),
+                    range_start: source_location.range_start(),
+                },
+            };
+            json_validation_errors.push(json_validation_error);
         }
+
+        return ValidationResult {
+            schema_error: None,
+            policy_error: None,
+            validation_errors: json_validation_errors,
+        };
     }
 }
 
@@ -114,20 +149,24 @@ pub unsafe extern "C" fn _set_entities(entities_ptr: u32, entities_len: u32) {
     ENGINE.set_entities(&entities);
 }
 
-#[cfg_attr(all(target_arch = "wasm32"), export_name = "set_policies")]
+#[cfg_attr(all(target_arch = "wasm32"), export_name = "validate")]
 #[no_mangle]
 pub unsafe extern "C" fn _validate(
     policies_ptr: u32,
     policies_len: u32,
     schema_ptr: u32,
     schema_len: u32,
-) {
+) -> u64 {
     let policies = ptr_to_string(policies_ptr, policies_len);
     let schema = ptr_to_string(schema_ptr, schema_len);
-    ENGINE.validate(&policies, &schema);
+    let result = ENGINE.validate(&policies, &schema);
+    let r = result.to_single_line_json();
+    let (ptr, len) = string_to_ptr(&r);
+    std::mem::forget(r);
+    return ((ptr as u64) << 32) | len as u64;
 }
 
-#[cfg_attr(all(target_arch = "wasm32"), export_name = "validate")]
+#[cfg_attr(all(target_arch = "wasm32"), export_name = "set_policies")]
 #[no_mangle]
 pub unsafe extern "C" fn _set_policies(policies_ptr: u32, policies_len: u32) {
     let policies = ptr_to_string(policies_ptr, policies_len);
@@ -293,14 +332,128 @@ mod test {
     }
     #[test]
     fn validate() {
+        let test_schema = r#"{
+            "PhotoApp": {
+                "commonTypes": {
+                    "PersonType": {
+                        "type": "Record",
+                        "attributes": {
+                            "age": {
+                                "type": "Long"
+                            },
+                            "name": {
+                                "type": "String"
+                            }
+                        }
+                    },
+                    "ContextType": {
+                        "type": "Record",
+                        "attributes": {
+                            "ip": {
+                                "type": "Extension",
+                                "name": "ipaddr"
+                            }
+                        }
+                    }
+                },
+                "entityTypes": {
+                    "User": {
+                        "shape": {
+                            "type": "PersonType",
+                            "attributes": {
+                                "employeeId": {
+                                    "type": "String"
+                                }
+                            }
+                        },
+                        "memberOfTypes": [
+                            "UserGroup"
+                        ]
+                    },
+                    "UserGroup": {
+                        "shape": {
+                            "type": "Record",
+                            "attributes": {}
+                        }
+                    },
+                    "Photo": {
+                        "shape": {
+                            "type": "Record",
+                            "attributes": {}
+                        },
+                        "memberOfTypes": [
+                            "Album"
+                        ]
+                    },
+                    "Album": {
+                        "shape": {
+                            "type": "Record",
+                            "attributes": {}
+                        }
+                    }
+                },
+                "actions": {
+                    "viewPhoto": {
+                        "appliesTo": {
+                            "principalTypes": [
+                                "User",
+                                "UserGroup"
+                            ],
+                            "resourceTypes": [
+                                "Photo"
+                            ],
+                            "context": {
+                                "type": "ContextType"
+                            }
+                        }
+                    },
+                    "createPhoto": {
+                        "appliesTo": {
+                            "principalTypes": [
+                                "User",
+                                "UserGroup"
+                            ],
+                            "resourceTypes": [
+                                "Photo"
+                            ],
+                            "context": {
+                                "type": "ContextType"
+                            }
+                        }
+                    },
+                    "listPhotos": {
+                        "appliesTo": {
+                            "principalTypes": [
+                                "User",
+                                "UserGroup"
+                            ],
+                            "resourceTypes": [
+                                "Photo"
+                            ],
+                            "context": {
+                                "type": "ContextType"
+                            }
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        let test_policy = r#"permit(
+            principal in Not::UserGroup::"janeFriends",
+            action in [PhotoApp::Action::"viewPhoto", PhotoApp::Action::"listPhotos"], 
+            resource in PhotoApp::Album::"janeTrips"
+        );"#;
         let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
         };
-        let bad_policy = r#"[
-        ]"#;
-        engine.validate(bad_policy, bad_policy);
+
+        let result = engine.validate(test_policy, test_schema);
+        let json_string = result.to_single_line_json();
+        println!("{}", json_string);
+        // assert_eq!(json_string, "");
     }
     #[test]
     fn evaluate() {
