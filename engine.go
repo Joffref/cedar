@@ -3,6 +3,7 @@ package cedar
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -70,54 +71,58 @@ func (c *CedarEngine) SetPolicies(ctx context.Context, policies string) error {
 // Eval evaluates the request against the policies and entities in the engine.
 // See EvalRequest for more information.
 func (c *CedarEngine) Eval(ctx context.Context, req EvalRequest) (EvalResult, error) {
-	evalSize := uint64(len(req.Principal) + len(req.Action) + len(req.Resource) + len(req.Context))
-	evalPtr, err := c.exportedFuncs[string(allocate)].Call(ctx, evalSize)
+	evalPtr, err := c.writeEvalRequestInMemory(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	defer c.exportedFuncs[string(deallocate)].Call(ctx, evalPtr[0], evalSize)
-	ok := c.module.Memory().WriteString(uint32(evalPtr[0]), req.Principal)
-	if !ok {
-		return "", fmt.Errorf("failed to write principal to memory")
-	}
-	offset := uint32(0)
-	offset += uint32(len(req.Principal))
-	ok = c.module.Memory().WriteString(uint32(evalPtr[0])+offset, req.Action)
-	if !ok {
-		return "", fmt.Errorf("failed to write action to memory")
-	}
-	offset += uint32(len(req.Action))
-	ok = c.module.Memory().WriteString(uint32(evalPtr[0])+offset, req.Resource)
-	if !ok {
-		return "", fmt.Errorf("failed to write resource to memory")
-	}
-	offset += uint32(len(req.Resource))
-	ok = c.module.Memory().WriteString(uint32(evalPtr[0])+offset, req.Context)
-	if !ok {
-		return "", fmt.Errorf("failed to write context to memory")
-	}
-	resPtr, err := c.exportedFuncs[string(isAuthorized)].Call(
+	defer c.deallocateEvalRequestInMemory(ctx, evalPtr, req)
+	resPtr, err := c.exportedFuncs[string(isAuthorizedString)].Call(
 		ctx,
-		evalPtr[0],
+		evalPtr,
 		uint64(len(req.Principal)),
-		evalPtr[0]+uint64(len(req.Principal)),
+		evalPtr+uint64(len(req.Principal)),
 		uint64(len(req.Action)),
-		evalPtr[0]+uint64(len(req.Principal))+uint64(len(req.Action)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action)),
 		uint64(len(req.Resource)),
-		evalPtr[0]+uint64(len(req.Principal))+uint64(len(req.Action))+uint64(len(req.Resource)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action))+uint64(len(req.Resource)),
 		uint64(len(req.Context)),
 	)
 	if err != nil {
 		return "", err
 	}
-	decisionPtr := uint32(resPtr[0] >> 32)
-	decisionSize := uint32(resPtr[0])
-	defer c.exportedFuncs[string(deallocate)].Call(ctx, uint64(decisionPtr), uint64(decisionSize))
-	decision, ok := c.module.Memory().Read(decisionPtr, decisionSize)
-	if !ok {
-		return "", fmt.Errorf("failed to read decision from memory")
-	}
+	decision, err := c.readDecisionFromMemory(ctx, resPtr[0])
 	return EvalResult(decision), nil
+}
+
+// EvalWithResponse evaluates the request against the policies and entities in the engine.
+// Returns the result as a json string.
+func (c *CedarEngine) EvalWithResponse(ctx context.Context, req EvalRequest) (EvalResponse, error) {
+	evalPtr, err := c.writeEvalRequestInMemory(ctx, req)
+	if err != nil {
+		return EvalResponse{}, err
+	}
+	defer c.deallocateEvalRequestInMemory(ctx, evalPtr, req)
+	resPtr, err := c.exportedFuncs[string(isAuthorizedJSON)].Call(
+		ctx,
+		evalPtr,
+		uint64(len(req.Principal)),
+		evalPtr+uint64(len(req.Principal)),
+		uint64(len(req.Action)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action)),
+		uint64(len(req.Resource)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action))+uint64(len(req.Resource)),
+		uint64(len(req.Context)),
+	)
+	if err != nil {
+		return EvalResponse{}, err
+	}
+	decision, err := c.readDecisionFromMemory(ctx, resPtr[0])
+	var evalResponse EvalResponse
+	err = json.Unmarshal(decision, &evalResponse)
+	if err != nil {
+		return EvalResponse{}, err
+	}
+	return evalResponse, nil
 }
 
 // IsAuthorized evaluates the request against the policies and entities in the engine and returns true if the request is authorized.

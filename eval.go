@@ -25,6 +25,22 @@ type EvalRequest struct {
 	Context string `json:"context"`
 }
 
+// EvalResponse is the response issued by the Eval function when in JSON Eval mode.
+type EvalResponse struct {
+	// Decision is the result of the policy evaluation.
+	Decision EvalResult `json:"decision"`
+	// Diagnostics is the diagnostic information returned by the policy engine when an evaluation is made.
+	Diagnostics Diagnostic `json:"diagnostics"`
+}
+
+// Diagnostic represents the diagnostic information returned by the policy engine when an evaluation is made.
+type Diagnostic struct {
+	// Reason is the list of policies that caused the decision.
+	Reason []string `json:"reason"`
+	// Errors is the list of errors that occurred during evaluation.
+	Errors []string `json:"errors"`
+}
+
 // EvalResult is the response object for the Eval function.
 type EvalResult string
 
