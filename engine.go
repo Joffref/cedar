@@ -125,6 +125,34 @@ func (c *CedarEngine) EvalWithResponse(ctx context.Context, req EvalRequest) (Ev
 	return evalResponse, nil
 }
 
+// IsAuthorizedPartial partially evaluates authorization request.
+// If the Authorizer can reach a response, it will return that response.
+// Otherwise, it will return a list of residual policies that still need to be evaluated.
+// See https://docs.rs/cedar-policy/latest/cedar_policy/struct.Authorizer.html#method.is_authorized_partial
+func (c *CedarEngine) IsAuthorizedPartial(ctx context.Context, req EvalRequest) (string, error) {
+	evalPtr, err := c.writeEvalRequestInMemory(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	defer c.deallocateEvalRequestInMemory(ctx, evalPtr, req)
+	resPtr, err := c.exportedFuncs[string(isAuthorizedPartial)].Call(
+		ctx,
+		evalPtr,
+		uint64(len(req.Principal)),
+		evalPtr+uint64(len(req.Principal)),
+		uint64(len(req.Action)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action)),
+		uint64(len(req.Resource)),
+		evalPtr+uint64(len(req.Principal))+uint64(len(req.Action))+uint64(len(req.Resource)),
+		uint64(len(req.Context)),
+	)
+	if err != nil {
+		return "", err
+	}
+	decision, err := c.readDecisionFromMemory(ctx, resPtr[0])
+	return string(decision), nil
+}
+
 // IsAuthorized evaluates the request against the policies and entities in the engine and returns true if the request is authorized.
 // It is a convenience method that is equivalent to calling Eval and checking the result.
 // See Eval for more information.

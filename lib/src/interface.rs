@@ -1,32 +1,30 @@
 extern crate alloc;
 extern crate core;
-extern crate wee_alloc;
 extern crate serde_json;
+extern crate wee_alloc;
 
-use cedar_policy::{PolicySet, Entities, Authorizer, EntityUid, Context, Request, Decision, Response};
+use cedar_policy::{
+    Authorizer, Context, Decision, Entities, EntityUid, PartialResponse, PolicySet, Request,
+    Response,
+};
 
-use std::{slice};
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, error::Error, slice, str::FromStr};
 
 use once_cell::sync::Lazy;
+use serde_json::json;
 
-static mut ENGINE: Lazy<CedarEngine>= Lazy::new(|| {
-    CedarEngine {
-        entity_store: Entities::empty(),
-        policy_set: PolicySet::new(),
-        authorizer: Authorizer::new(),
-    }
+static mut ENGINE: Lazy<CedarEngine> = Lazy::new(|| CedarEngine {
+    entity_store: Entities::empty(),
+    policy_set: PolicySet::new(),
+    authorizer: Authorizer::new(),
 });
 
-static mut HEAP: Lazy<HashMap<* mut u8, &mut [u8]>> = Lazy::new(|| {
-    HashMap::new()
-});
+static mut HEAP: Lazy<HashMap<*mut u8, &mut [u8]>> = Lazy::new(|| HashMap::new());
 
 struct CedarEngine {
     entity_store: Entities,
     policy_set: PolicySet,
-    authorizer: Authorizer
+    authorizer: Authorizer,
 }
 
 impl CedarEngine {
@@ -50,24 +48,74 @@ impl CedarEngine {
             }
         }
     }
+
+    fn is_authorized_partial(
+        &self,
+        entity: &str,
+        action: &str,
+        resource: &str,
+        context: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        let principal = EntityUid::from_str(entity)?;
+        let action = EntityUid::from_str(action)?;
+        let resource = EntityUid::from_str(resource)?;
+        let context = Context::from_json_str(context, None)?;
+        let query = Request::new(Some(principal), Some(action), Some(resource), context);
+        let response =
+            self.authorizer
+                .is_authorized_partial(&query, &self.policy_set, &self.entity_store);
+        return match response {
+            PartialResponse::Concrete(concrete) => match serde_json::to_string(&concrete) {
+                Ok(json) => Ok(json),
+                Err(_) => Err(String::from("Error serializing concrete").into()),
+            },
+            PartialResponse::Residual(residual) => {
+                let residual_json = json!(
+                    {
+                        "diagnostics": residual.diagnostics(),
+                        "residuals": format!("{}", residual.residuals())
+                    }
+                );
+                match serde_json::to_string(&residual_json) {
+                    Ok(json) => Ok(json),
+                    Err(_) => Err(String::from("Error serializing residual").into()),
+                }
+            }
+        };
+    }
+
     fn is_authorized(&self, entity: &str, action: &str, resource: &str, context: &str) -> Response {
         let principal = EntityUid::from_str(entity).expect("entity parse error");
         let action = EntityUid::from_str(action).expect("entity parse error");
         let resource = EntityUid::from_str(resource).expect("entity parse error");
         let context = Context::from_json_str(context, None).unwrap();
         let query = Request::new(Some(principal), Some(action), Some(resource), context);
-        self.authorizer.is_authorized(&query, &self.policy_set, &self.entity_store)
+        self.authorizer
+            .is_authorized(&query, &self.policy_set, &self.entity_store)
     }
 
-    fn is_authorized_string(&self, entity: &str, action: &str, resource: &str, context: &str) -> String {
+    fn is_authorized_string(
+        &self,
+        entity: &str,
+        action: &str,
+        resource: &str,
+        context: &str,
+    ) -> String {
         let response = self.is_authorized(entity, action, resource, context);
         return if response.decision() == Decision::Allow {
             String::from("Allow")
         } else {
             String::from("Deny")
-        }
+        };
     }
-    fn is_authorized_json(&self, entity: &str, action: &str, resource: &str, context: &str) -> String {
+
+    fn is_authorized_json(
+        &self,
+        entity: &str,
+        action: &str,
+        resource: &str,
+        context: &str,
+    ) -> String {
         let response = self.is_authorized(entity, action, resource, context);
         return serde_json::to_string(&response).unwrap();
     }
@@ -87,7 +135,6 @@ pub unsafe extern "C" fn _set_policies(policies_ptr: u32, policies_len: u32) {
     ENGINE.set_policies(&policies);
 }
 
-
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "is_authorized_string")]
 #[no_mangle]
 // Returns a decision as a string (Allow/Deny)
@@ -105,7 +152,12 @@ pub unsafe extern "C" fn _is_authorized_string(
     let action = ptr_to_string(action_ptr, action_len);
     let resource = ptr_to_string(resource_ptr, resource_len);
     let context = ptr_to_string(context_ptr, context_len);
-    let result = ENGINE.is_authorized_string(entity.as_str(), action.as_str(), resource.as_str(), context.as_str());
+    let result = ENGINE.is_authorized_string(
+        entity.as_str(),
+        action.as_str(),
+        resource.as_str(),
+        context.as_str(),
+    );
     let (ptr, len) = string_to_ptr(&result);
     std::mem::forget(result);
     return ((ptr as u64) << 32) | len as u64;
@@ -128,12 +180,47 @@ pub unsafe extern "C" fn _is_authorized_json(
     let action = ptr_to_string(action_ptr, action_len);
     let resource = ptr_to_string(resource_ptr, resource_len);
     let context = ptr_to_string(context_ptr, context_len);
-    let result = ENGINE.is_authorized_json(entity.as_str(), action.as_str(), resource.as_str(), context.as_str());
+    let result = ENGINE.is_authorized_json(
+        entity.as_str(),
+        action.as_str(),
+        resource.as_str(),
+        context.as_str(),
+    );
     let (ptr, len) = string_to_ptr(&result);
     std::mem::forget(result);
     return ((ptr as u64) << 32) | len as u64;
 }
 
+#[cfg_attr(all(target_arch = "wasm32"), export_name = "is_authorized_partial")]
+#[no_mangle]
+// Returns decision formatted as JSON as a string or a partial response
+pub unsafe extern "C" fn _is_authorized_partial(
+    entity_ptr: u32,
+    entity_len: u32,
+    action_ptr: u32,
+    action_len: u32,
+    resource_ptr: u32,
+    resource_len: u32,
+    context_ptr: u32,
+    context_len: u32,
+) -> u64 {
+    let entity = ptr_to_string(entity_ptr, entity_len);
+    let action = ptr_to_string(action_ptr, action_len);
+    let resource = ptr_to_string(resource_ptr, resource_len);
+    let context = ptr_to_string(context_ptr, context_len);
+    let result = match ENGINE.is_authorized_partial(
+        entity.as_str(),
+        action.as_str(),
+        resource.as_str(),
+        context.as_str(),
+    ) {
+        Ok(response) => response,
+        Err(error) => error.to_string(),
+    };
+    let (ptr, len) = string_to_ptr(&result);
+    std::mem::forget(result);
+    return ((ptr as u64) << 32) | len as u64;
+}
 
 /// Returns a string from WebAssembly compatible numeric types representing
 /// its pointer and length.
@@ -163,8 +250,8 @@ static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 /// [`deallocate`] when finished.
 #[cfg_attr(all(target_arch = "wasm32"), export_name = "allocate")]
 #[no_mangle]
-pub unsafe extern "C" fn _allocate(size: u32) -> * mut u8 {
-   allocate(size as usize)
+pub unsafe extern "C" fn _allocate(size: u32) -> *mut u8 {
+    allocate(size as usize)
 }
 
 /// Allocates size bytes and leaks the pointer where they start.
@@ -173,14 +260,13 @@ unsafe fn allocate(size: usize) -> *mut u8 {
     let vec: Vec<u8> = Vec::with_capacity(size);
 
     // into_raw leaks the memory to the caller.
-    let  ptr = vec.as_ptr() as *mut u8;
+    let ptr = vec.as_ptr() as *mut u8;
 
     // Store the boxed_vec to prevent it from being deallocated.
     HEAP.insert(ptr, vec.leak());
     // Return the pointer to the caller.
     ptr
 }
-
 
 /// WebAssembly export that deallocates a pointer of the given size (linear
 /// memory offset, byteCount) allocated by [`allocate`].
@@ -204,7 +290,7 @@ mod test {
 
     #[test]
     fn set_policies() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -219,7 +305,7 @@ mod test {
     }
     #[test]
     fn set_entities() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -269,7 +355,7 @@ mod test {
 
     #[test]
     fn evaluate_string_response() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -278,13 +364,18 @@ mod test {
         engine.set_policies(policies);
         let entities = "[]";
         engine.set_entities(entities);
-        let result = engine.is_authorized_string("User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"", "{}");
+        let result = engine.is_authorized_string(
+            "User::\"alice\"",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        );
         assert_eq!(result, "Allow");
     }
 
     #[test]
     fn evaluate() {
-        let mut engine = CedarEngine{
+        let mut engine = CedarEngine {
             authorizer: Authorizer::new(),
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
@@ -293,12 +384,37 @@ mod test {
         engine.set_policies(policies);
         let entities = "[]";
         engine.set_entities(entities);
-        let result = engine.is_authorized("User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"", "{}");
+        let result = engine.is_authorized(
+            "User::\"alice\"",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        );
         assert_eq!(result.decision(), Decision::Allow);
     }
 
     #[test]
-     fn allocate_deallocate() {
+    fn authorize_partially() {
+        let mut engine = CedarEngine {
+            authorizer: Authorizer::new(),
+            entity_store: Entities::empty(),
+            policy_set: PolicySet::new(),
+        };
+        let policies = "permit(principal, action, resource); permit(principal, action, resource);";
+        engine.set_policies(policies);
+        let entities = "[]";
+        engine.set_entities(entities);
+        let result = engine.is_authorized(
+            "User::\"alice\"",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        );
+        assert_eq!(result.decision(), Decision::Allow);
+    }
+
+    #[test]
+    fn allocate_deallocate() {
         unsafe {
             let ptr = allocate(10);
             assert_eq!(HEAP.contains_key(&ptr), true);

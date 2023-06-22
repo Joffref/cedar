@@ -133,3 +133,58 @@ func evalJSONMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action
 		t.Fatal("expected no errors")
 	}
 }
+
+func TestCedarEngine_IsAuthorizedPartial(t *testing.T) {
+	policy := `
+	permit(
+		principal == User::"alice",
+		action    == Action::"update",
+		resource  == Photo::"VacationPhoto94.jpg"
+	);
+	`
+	engine, err := NewCedarEngine(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close(context.Background())
+	err = engine.SetEntitiesFromJson(context.Background(), "[]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = engine.SetPolicies(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("is authorized must return allow", func(t *testing.T) {
+		isAuthorizedPartialMustReturnAllow(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"")
+	})
+	t.Run("is authorized must return deny", func(t *testing.T) {
+		isAuthorizedPartialMustReturnDeny(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto95.jpg\"")
+	})
+}
+
+func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+	res, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
+		Principal: principal,
+		Action:    action,
+		Resource:  resource,
+		Context:   "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	println(res)
+}
+
+func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+	res, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
+		Principal: principal,
+		Action:    action,
+		Resource:  resource,
+		Context:   "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	println(res)
+}
