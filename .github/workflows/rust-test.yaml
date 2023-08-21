@@ -2,7 +2,7 @@ name: rust-test
 
 on:
   workflow_run:
-    workflows: ["wasm-build"]
+    workflows: [ wasm-build ]
     types:
       - completed
 
