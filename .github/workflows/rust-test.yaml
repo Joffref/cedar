@@ -1,22 +1,22 @@
 name: rust-test
 
 on:
-  push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+  workflow_run:
+    workflows: [ wasm-build ]
+    types:
+      - completed
 
 jobs:
-    build:
-      runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
-      steps:
-      - uses: actions/checkout@v3
-      - name: Install latest nightly Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: nightly
-          override: true
-          components: rustfmt, clippy
-      - name: test
-        run: make rust-test
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install latest nightly Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+        components: rustfmt, clippy
+    - name: test
+      run: make rust-test

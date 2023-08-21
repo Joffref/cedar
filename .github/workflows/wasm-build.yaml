@@ -1,0 +1,30 @@
+name: wasm-build
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v3
+    - name: Install latest nightly Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: nightly
+        override: true
+        components: rustfmt, clippy
+    - name: Set up WASM target
+      run: rustup target add wasm32-unknown-unknown
+    - name: Build WASM artifacts
+      run: make wasm
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "Build WASM artifacts"
+        commit_options: '--no-verify --signoff'
+        repository: .
