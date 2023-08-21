@@ -3,7 +3,17 @@ extern crate core;
 extern crate wee_alloc;
 extern crate serde_json;
 
-use cedar_policy::{PolicySet, Entities, Authorizer, EntityUid, Context, Request, Decision, Response};
+use cedar_policy::{
+    PolicySet,
+    Entities,
+    Authorizer,
+    EntityUid,
+    Context,
+    Request,
+    Decision,
+    Response,
+    frontend
+};
 
 use std::{slice};
 use std::collections::HashMap;
@@ -134,6 +144,20 @@ pub unsafe extern "C" fn _is_authorized_json(
     return ((ptr as u64) << 32) | len as u64;
 }
 
+#[cfg_attr(all(target_arch = "wasm32"), export_name = "ffi")]
+#[no_mangle]
+// Provides FFI support
+pub unsafe extern "C" fn _ffi(
+    payload_ptr: u32,
+    payload_len: u32,
+) -> u64 {
+    let payload = ptr_to_string(payload_ptr, payload_len);
+    let result = frontend::is_authorized::json_is_authorized(payload.as_str());
+    let body = serde_json::to_string(&result).unwrap();
+    let (ptr, len) = string_to_ptr(&body);
+    std::mem::forget(body);
+    return ((ptr as u64) << 32) | len as u64;
+}
 
 /// Returns a string from WebAssembly compatible numeric types representing
 /// its pointer and length.

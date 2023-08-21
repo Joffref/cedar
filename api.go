@@ -11,6 +11,7 @@ const (
 	setPolicies        function = "set_policies"
 	isAuthorizedString function = "is_authorized_string"
 	isAuthorizedJSON   function = "is_authorized_json"
+	ffi                function = "ffi"
 )
 
 // exportFuncs returns a map of exported functions from the wasm module.
@@ -20,6 +21,7 @@ func exportFuncs(module api.Module) map[string]api.Function {
 	exportedFuncs[string(isAuthorizedJSON)] = module.ExportedFunction(string(isAuthorizedJSON))
 	exportedFuncs[string(setEntities)] = module.ExportedFunction(string(setEntities))
 	exportedFuncs[string(setPolicies)] = module.ExportedFunction(string(setPolicies))
+	exportedFuncs[string(ffi)] = module.ExportedFunction(string(ffi))
 	// allocate and deallocate help us manage memory in the wasm module.
 	exportedFuncs[string(allocate)] = module.ExportedFunction(string(allocate))
 	exportedFuncs[string(deallocate)] = module.ExportedFunction(string(deallocate))
