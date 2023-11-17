@@ -135,7 +135,7 @@ func evalJSONMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action
 	}
 }
 
-func TestCedarEngine_IsAuthorizedPartial(t *testing.T) {
+func TestCedarEngine_IsAuthorizedPartialTemplate(t *testing.T) {
 	policy := `
 	permit(
 		principal == User::"alice",
@@ -157,25 +157,82 @@ func TestCedarEngine_IsAuthorizedPartial(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Run("is authorized partial must return allow", func(t *testing.T) {
-		isAuthorizedPartialMustReturnAllow(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"")
+		isAuthorizedPartialMustReturnAllow(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"Photo::\"VacationPhoto94.jpg\"", "{}")
 	})
 	t.Run("is authorized partial must return deny", func(t *testing.T) {
-		isAuthorizedPartialMustReturnDeny(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto95.jpg\"")
+		isAuthorizedPartialMustReturnDeny(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"Photo::\"VacationPhoto95.jpg\"", "{}")
 	})
-	t.Run("is authorized partial must return residual principal", func(t *testing.T) {
-		isAuthorizedPartialMustReturnResidual(t, engine, "f", "Action::\"update\"", "Photo::\"VacationPhoto95.jpg\"")
+	t.Run("is authorized partial with missing principal must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "", "Action::\"update\"",
+			"Photo::\"VacationPhoto95.jpg\"", "{}")
 	})
-	t.Run("is authorized partial must return residual resource", func(t *testing.T) {
-		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "Action::\"update\"", "")
+	t.Run("is authorized partial with missing action must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "",
+			"Photo::\"VacationPhoto95.jpg\"", "{}")
+	})
+	t.Run("is authorized partial with missing resource must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"", "{}")
 	})
 }
 
-func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+func TestCedarEngine_IsAuthorizedPartialCondition(t *testing.T) {
+	policy := `
+	permit(principal, action, resource)
+	when {
+		principal == User::"alice" && 
+		action == Action::"update" && 
+		resource  == Photo::"VacationPhoto94.jpg" &&
+        context.test == "foo"
+	};
+	`
+	engine, err := NewCedarEngine(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close(context.Background())
+	err = engine.SetEntitiesFromJson(context.Background(), "[]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = engine.SetPolicies(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("is authorized partial must return allow", func(t *testing.T) {
+		isAuthorizedPartialMustReturnAllow(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"Photo::\"VacationPhoto94.jpg\"", "{\"test\":\"foo\"}")
+	})
+	t.Run("is authorized partial must return deny", func(t *testing.T) {
+		isAuthorizedPartialMustReturnDeny(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"Photo::\"VacationPhoto95.jpg\"", "{\"test\":\"foo\"}")
+	})
+	t.Run("is authorized partial with no principal must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "f", "Action::\"update\"",
+			"Photo::\"VacationPhoto95.jpg\"", "{\"test\":\"foo\"}")
+	})
+	t.Run("is authorized partial with no action must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "",
+			"", "{\"test\":\"foo\"}")
+	})
+	t.Run("is authorized partial with no resource must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"", "{\"test\":\"foo\"}")
+	})
+	t.Run("is authorized partial with missing context attribute must return residual", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "Action::\"update\"",
+			"", "{}")
+	})
+}
+
+func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, principal, action, resource, jsonContext string) {
 	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
 		Principal: principal,
 		Action:    action,
 		Resource:  resource,
-		Context:   "{}",
+		Context:   jsonContext,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -198,12 +255,12 @@ func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, princ
 	}
 }
 
-func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action, resource, jsonContext string) {
 	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
 		Principal: principal,
 		Action:    action,
 		Resource:  resource,
-		Context:   "{}",
+		Context:   jsonContext,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -226,12 +283,12 @@ func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, princi
 	}
 }
 
-func isAuthorizedPartialMustReturnResidual(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+func isAuthorizedPartialMustReturnResidual(t *testing.T, engine *CedarEngine, principal, action, resource, jsonContext string) {
 	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
 		Principal: principal,
 		Action:    action,
 		Resource:  resource,
-		Context:   "{}",
+		Context:   jsonContext,
 	})
 	if err != nil {
 		t.Fatal(err)
