@@ -56,14 +56,22 @@ impl CedarEngine {
         resource: &str,
         context: &str,
     ) -> Result<String, Box<dyn Error>> {
-        let principal = EntityUid::from_str(entity)?;
-        let action = EntityUid::from_str(action)?;
-        let resource = EntityUid::from_str(resource)?;
-        let context = Context::from_json_str(context, None)?;
-        let query = Request::new(Some(principal), Some(action), Some(resource), context);
+        let mut builder = Request::builder();
+        if !entity.is_empty() { builder = builder.principal(Some(EntityUid::from_str(entity)?)); }
+        if !action.is_empty() { builder = builder.action(Some(EntityUid::from_str(action)?)); }
+        if !resource.is_empty() { builder = builder.resource(Some(EntityUid::from_str(resource)?)); }
+        let query = builder.context(Context::from_json_str(context, None)?).build();
+        // -- begin original --
+        // if !context.is_empty() {}
+        // let principal = EntityUid::from_str(entity)?;
+        // let action = EntityUid::from_str(action)?;
+        // let resource = EntityUid::from_str(resource)?;
+        // let context = Context::from_json_str(context, None)?;
+        // let query = Request::new(Some(principal), Some(action), Some(resource), context);
+        // -- end original --
         let response =
             self.authorizer
-                .is_authorized_partial(&query, &self.policy_set, &self.entity_store);
+                .is_authorized_partial(&query, &self.policy_set, &self.entity_store.clone().partial());
         return match response {
             PartialResponse::Concrete(concrete) => match serde_json::to_string(&concrete) {
                 Ok(json) => Ok(json),
@@ -400,17 +408,32 @@ mod test {
             entity_store: Entities::empty(),
             policy_set: PolicySet::new(),
         };
-        let policies = "permit(principal, action, resource); permit(principal, action, resource);";
+        let policies = r#"permit(principal == User::"alice", action, resource);"#;
         engine.set_policies(policies);
         let entities = "[]";
         engine.set_entities(entities);
-        let result = engine.is_authorized(
+        let result = engine.is_authorized_partial(
             "User::\"alice\"",
             "Action::\"update\"",
             "Photo::\"VacationPhoto94.jpg\"",
             "{}",
-        );
-        assert_eq!(result.decision(), Decision::Allow);
+        ).unwrap();
+
+        assert_eq!(result, r#"{"decision":"Allow","diagnostics":{"reason":["policy0"],"errors":[]}}"#);
+        let result = engine.is_authorized_partial(
+            "User::\"john\"",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        ).unwrap();
+        assert_eq!(result, r#"{"decision":"Deny","diagnostics":{"reason":[],"errors":[]}}"#);
+        let result = engine.is_authorized_partial(
+            "",
+            "Action::\"update\"",
+            "Photo::\"VacationPhoto94.jpg\"",
+            "{}",
+        ).unwrap();
+        assert_eq!(result, "{\"diagnostics\":{\"reason\":[],\"errors\":[]},\"residuals\":\"Templates:\\npermit(\\n  principal,\\n  action,\\n  resource\\n) when {\\n  (((unknown(principal) == User::\\\"alice\\\") && true) && true) && true\\n};, Template Linked Policies:\\npermit(\\n  principal,\\n  action,\\n  resource\\n) when {\\n  (((unknown(principal) == User::\\\"alice\\\") && true) && true) && true\\n};\"}");
     }
 
     #[test]
