@@ -2,6 +2,7 @@ package cedar
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -155,16 +156,22 @@ func TestCedarEngine_IsAuthorizedPartial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Run("is authorized must return allow", func(t *testing.T) {
+	t.Run("is authorized partial must return allow", func(t *testing.T) {
 		isAuthorizedPartialMustReturnAllow(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto94.jpg\"")
 	})
-	t.Run("is authorized must return deny", func(t *testing.T) {
+	t.Run("is authorized partial must return deny", func(t *testing.T) {
 		isAuthorizedPartialMustReturnDeny(t, engine, "User::\"alice\"", "Action::\"update\"", "Photo::\"VacationPhoto95.jpg\"")
+	})
+	t.Run("is authorized partial must return residual principal", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "f", "Action::\"update\"", "Photo::\"VacationPhoto95.jpg\"")
+	})
+	t.Run("is authorized partial must return residual resource", func(t *testing.T) {
+		isAuthorizedPartialMustReturnResidual(t, engine, "User::\"alice\"", "Action::\"update\"", "")
 	})
 }
 
 func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, principal, action, resource string) {
-	res, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
+	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
 		Principal: principal,
 		Action:    action,
 		Resource:  resource,
@@ -173,11 +180,26 @@ func isAuthorizedPartialMustReturnAllow(t *testing.T, engine *CedarEngine, princ
 	if err != nil {
 		t.Fatal(err)
 	}
-	println(res)
+
+	var res = EvalResponse{}
+	err2 := json.Unmarshal([]byte(resJson), &res)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+
+	if res.Decision != "Allow" {
+		t.Fatal("expected Allow")
+	}
+	if res.Diagnostics.Reason[0] != "policy0" { // First policy as it is the only one. Cedar engine fixes the policy name to policy<number> if not provided.
+		t.Fatal("expected policy0 to be the reason for the decision")
+	}
+	if len(res.Diagnostics.Errors) != 0 {
+		t.Fatal("expected no errors")
+	}
 }
 
 func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, principal, action, resource string) {
-	res, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
+	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
 		Principal: principal,
 		Action:    action,
 		Resource:  resource,
@@ -186,5 +208,41 @@ func isAuthorizedPartialMustReturnDeny(t *testing.T, engine *CedarEngine, princi
 	if err != nil {
 		t.Fatal(err)
 	}
-	println(res)
+
+	var res = EvalResponse{}
+	err2 := json.Unmarshal([]byte(resJson), &res)
+	if err2 != nil {
+		t.Fatal(err2)
+	}
+
+	if res.Decision != "Deny" {
+		t.Fatal("expected Deny")
+	}
+	if len(res.Diagnostics.Reason) != 0 {
+		t.Fatal("expected no reason for the decision")
+	}
+	if len(res.Diagnostics.Errors) != 0 {
+		t.Fatal("expected no errors")
+	}
+}
+
+func isAuthorizedPartialMustReturnResidual(t *testing.T, engine *CedarEngine, principal, action, resource string) {
+	resJson, err := engine.IsAuthorizedPartial(context.Background(), EvalRequest{
+		Principal: principal,
+		Action:    action,
+		Resource:  resource,
+		Context:   "{}",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// TODO: need a new struct for partial results
+	var res = EvalResponse{}
+	err2 := json.Unmarshal([]byte(resJson), &res)
+	if err2 != nil {
+		t.Fatal(err2, " -- ", resJson)
+	}
+
+	println("resJson = {}", resJson)
 }

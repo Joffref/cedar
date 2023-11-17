@@ -12,11 +12,13 @@ const (
 	isAuthorizedString  function = "is_authorized_string"
 	isAuthorizedJSON    function = "is_authorized_json"
 	isAuthorizedPartial function = "is_authorized_partial"
+	initialize          function = "initialize"
 )
 
 // exportFuncs returns a map of exported functions from the wasm module.
 func exportFuncs(module api.Module) map[string]api.Function {
 	exportedFuncs := make(map[string]api.Function)
+	exportedFuncs[string(initialize)] = module.ExportedFunction(string(initialize))
 	exportedFuncs[string(isAuthorizedString)] = module.ExportedFunction(string(isAuthorizedString))
 	exportedFuncs[string(isAuthorizedJSON)] = module.ExportedFunction(string(isAuthorizedJSON))
 	exportedFuncs[string(isAuthorizedPartial)] = module.ExportedFunction(string(isAuthorizedPartial))
